@@ -1,31 +1,54 @@
-FROM alpine:3.6
+FROM alpine:3.16
 
-ENV SERVER_ADDR     0.0.0.0
-ENV SERVER_PORT     51348
-ENV PASSWORD        psw
-ENV METHOD          aes-128-ctr
-ENV PROTOCOL        auth_aes128_md5
-ENV PROTOCOLPARAM   32
-ENV OBFS            tls1.2_ticket_auth_compatible
-ENV TIMEOUT         300
-ENV DNS_ADDR        8.8.8.8
-ENV DNS_ADDR_2      8.8.4.4
+ARG VERSION
 
-ARG BRANCH=manyuser
-ARG WORK=~
+ENV SERVER_ADDR=0.0.0.0 \
+    SERVER_PORT=8388 \
+    METHOD=aes-128-gcm \
+    TIMEOUT=300 \
+    DNS_ADDR=8.8.8.8 \
+    PASSWORD=
 
-
-RUN apk --no-cache add python \
-    libsodium \
-    wget
-
-
-RUN mkdir -p $WORK && \
-    wget -qO- --no-check-certificate https://github.com/shadowsocksr/shadowsocksr/archive/$BRANCH.tar.gz | tar -xzf - -C $WORK
-
-
-WORKDIR $WORK/shadowsocksr-$BRANCH/shadowsocks
-
+RUN set -ex && \
+    apk add --no-cache \
+        --virtual .build-deps \
+        autoconf \
+        build-base \
+        curl \
+        libev-dev \
+        libcap \
+        libtool \
+        linux-headers \
+        libsodium-dev \
+        mbedtls-dev \
+        pcre-dev \
+        tar \
+        c-ares-dev && \
+    mkdir -p /tmp/ss && \
+    cd /tmp/ss && \
+    curl -sSL https://github.com/shadowsocks/shadowsocks-libev/releases/latest/download/shadowsocks-libev-$VERSION.tar.gz | \
+    tar xz --strip 1 && \
+    ./configure --prefix=/usr --disable-documentation && \
+    make -j `nproc` install && \
+    ls /usr/bin/ss-* | xargs -n1 setcap 'cap_net_bind_service+ep' && \
+    runDeps="$( \
+        scanelf --needed --nobanner /usr/bin/ss-* \
+            | awk '{ gsub(/,/, "\nso:", $2); print "so:" $2 }' \
+            | xargs -r apk info --installed \
+            | sort -u \
+    )" && \
+    apk add --no-cache --virtual .run-deps $runDeps && \
+    apk del .build-deps && \
+    cd / && rm -rf /tmp/*
 
 EXPOSE $SERVER_PORT
-CMD python server.py -p $SERVER_PORT -k $PASSWORD -m $METHOD -O $PROTOCOL -o $OBFS -G $PROTOCOLPARAM
+
+CMD ss-server \
+    -s $SERVER_ADDR \
+    -p $SERVER_PORT \
+    -k ${PASSWORD:-$(hostname)} \
+    -m $METHOD \
+    -t $TIMEOUT \
+    -d $DNS_ADDR \
+    --no-delay \
+    -u
